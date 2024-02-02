@@ -20,5 +20,4 @@ install.packages("packageName")
 # Code availability:
 Please follow [this link](https://sagarutturkar.github.io/NatureComm_2024_Matosevic/) to view the document describing the R-code to download and analyze TCG-GBM data and generate figure 1G and 1H in the manuscript.
 
-Complete code as R Markdown file is available via [this GitHub Repository](https://github.com/sagarutturkar/NatureComm_2024_Matosevic/tree/main/docs).
-
+Complete code as R Markdown file (index.Rmd) is available via [this GitHub Repository](https://github.com/sagarutturkar/NatureComm_2024_Matosevic/blob/main/docs/index.Rmd).
