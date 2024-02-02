@@ -1,0 +1,385 @@
+---
+title: "NCOMMS Paper 2024 - Matosevic"
+author: "Sagar Utturkar"
+date: "April 2020"
+output:
+  prettydoc::html_pretty:
+    theme: cayman
+    toc: true
+    highlight: github
+---
+
+```{r setwd, warning=FALSE, message=FALSE, echo=FALSE, tidy=TRUE, eval=TRUE}
+
+setwd("C:/Users/sutturka/Downloads/Matosevic_NCOMMS_2024/")
+
+
+```
+
+
+# Introduction:
+This document describes the TCGA-GBM data analysis performed for the manuscript titled **synNotch-programmed iPSC-derived NK cells usurp TIGIT and CD73 activities to mediate potent targeting of glioblastoma**, published in journal **Nature Communications** in 2024.
+
+# R libraries:
+
+```{r prepare_1, warning=FALSE, message=FALSE, echo=TRUE, tidy=TRUE, eval=TRUE}
+
+# Load R libraries 
+
+library(tidyverse)
+library(TCGAbiolinks)
+library(EnsDb.Hsapiens.v86)
+library(ggplot2)
+library(EnhancedVolcano)
+library(knitr)
+library(kableExtra)
+library(janitor)
+
+```
+
+
+# Data collection (TCGA-GBM):
+Expression data for Glioblastoma (GBM) was downloaded from the TCGA data portal using the TCGA-Biolinks package (Accessed April 2020). We collected counts data (Raw and FPKM) from TCGA-GBM study.
+
+## FPKM data:
+FPKM (normalized) data only for the tumor samples (156 patients) was used to stratify the patients into high and low expression groups based on expression of specific gene of interest or combination of genes. Stratification was performed using the quantile method.
+
+```{r Download_TCGA_FPKM_Data, warning=FALSE, message=FALSE, echo=TRUE, tidy=TRUE, eval=FALSE}
+
+
+query <- GDCquery(project = "TCGA-GBM",
+                  data.category = "Transcriptome Profiling",
+                  data.type = "Gene Expression Quantification", 
+                  workflow.type = "HTSeq - FPKM")
+
+
+GDCdownload(query)
+
+data <- GDCprepare(query,
+                   save = TRUE, 
+                   save.filename = "TCGA_GBM_HTSeq_FPKM.rda")
+
+
+data <- TCGAanalyze_Preprocessing(object = data, 
+                                      cor.cut = 0.6,
+                                      datatype = "HTSeq - FPKM")
+
+
+# Process sample information to separate tumor and normal data
+samplesDown <- getResults(query, cols = c("cases"))
+
+
+
+# Subset data - TP	=  PRIMARY SOLID TUMOR
+dataSmTP <- TCGAquery_SampleTypes(barcode = samplesDown,
+                                  typesample = "TP")
+
+
+# Subset data - NT	 = Solid Tissue Normal
+dataSmNT <- TCGAquery_SampleTypes(barcode = samplesDown,
+                                  typesample = "NT")
+
+
+# FPKM matrix for Tumor and Normal data
+# 156 Tumor and 5 Normal - Accessed on April 2020
+tumor.FPKM  = data[,dataSmTP]
+normal.FPKM = data[,dataSmNT]
+
+saveRDS(tumor.FPKM, file  = "tumor.GBM.FPKM.rds")
+saveRDS(normal.FPKM, file = "normal.GBM.FPKM.rds")
+
+```
+
+
+## Processing of FPKM data:
+FPKM matrix was processed to include the annotations, removal of duplicate gene symbols and finally transposed for easy processing of data by specific gene.  
+
+
+
+```{r Process_TCGA_FPKM_Data, warning=FALSE, message=FALSE, echo=TRUE, tidy=TRUE, eval=FALSE}
+
+setwd("C:/Users/sutturka/Downloads/Matosevic_NCOMMS_2024/")
+
+tumor.FPKM = readRDS(file  = "tumor.GBM.FPKM.rds")
+
+#prepare combined FPKM matrix
+
+tumor.FPKM = tumor.FPKM %>%
+             as.data.frame() %>%
+             rownames_to_column("Gene_ID")
+
+
+# Add Annotations
+Anno <- AnnotationDbi::select(EnsDb.Hsapiens.v86,
+                                    key=tumor.FPKM$Gene_ID, 
+                                    columns="SYMBOL",
+                                    keytype="GENEID")
+
+Anno <- as_tibble(Anno)
+names(Anno) = c("Gene_ID", "SYMBOL")
+
+
+tumor.FPKM = inner_join(as.data.frame(tumor.FPKM), Anno) %>%
+           remove_rownames() %>%
+           drop_na(SYMBOL) %>%
+           dplyr::distinct(SYMBOL, .keep_all = TRUE)  %>%
+           dplyr::select(-c("Gene_ID"))   %>%
+           dplyr::relocate("SYMBOL")
+
+transposed.matrix = tumor.FPKM %>% 
+                     column_to_rownames(var = "SYMBOL") %>% 
+                     t()  %>% 
+                     as.data.frame()  %>%
+                     rownames_to_column(var ="SYMBOL")
+
+transposed.matrix = column_to_rownames(transposed.matrix, "SYMBOL")
+
+saveRDS(transposed.matrix, "TM.rds")
+
+```
+
+
+
+## Raw data:
+Raw counts data for the tumor samples (156 patients) was used to perform differential expression analysis between different groups of patients. Differential expression analysis was performed using the edgeR method available through TCGAanalyze_DEA function from R-package TCGAbiolinks.
+
+
+```{r Download_TCGA_raw_counts_Data, warning=FALSE, message=FALSE, echo=TRUE, tidy=TRUE, eval=FALSE}
+
+
+queryDown <- GDCquery(project = CancerProject, 
+                      data.category = "Transcriptome Profiling",
+                      data.type = "Gene Expression Quantification", 
+                      workflow.type = "HTSeq - Counts", 
+                      barcode = c(dataSmTP, dataSmNT))
+
+raw.data <- GDCprepare(query = queryDown, 
+                        save = TRUE, 
+                        save.filename = "TCGA_GBM_HTSeq_Countds.rda")
+
+
+raw.data <- TCGAanalyze_Preprocessing(object = raw.data, 
+                                      cor.cut = 0.6,
+                                      datatype = "HTSeq - Counts")
+
+
+dataNorm   <- TCGAanalyze_Normalization(tabDF = raw.data,
+                                      geneInfo = geneInfoHT,
+                                      method = "gcContent")
+
+dataNorm   <- TCGAanalyze_Normalization(tabDF = raw.data,
+                                      geneInfo = geneInfoHT,
+                                      method = "geneLength")
+
+dataFilt  <- TCGAanalyze_Filtering(tabDF = dataNorm,
+                                  method = "quantile", 
+                                  qnt.cut =  0.25)
+
+
+#UseRaw_afterFilter: Keep raw counts after filtering
+raw.counts <- UseRaw_afterFilter(raw.data, dataFilt)
+
+saveRDS(raw.counts, file = "GBM.raw.counts.rds")
+
+```
+
+
+
+```{r read_data, warning=FALSE, message=FALSE, echo=TRUE, tidy=TRUE, eval=TRUE}
+
+# Transposed matrix of FPKM data
+M = readRDS(file = "TM.rds")
+
+# Raw counts
+GBM.raw.counts = readRDS(file = "GBM.raw.counts.rds")
+
+```
+
+
+
+# Analysis functions:
+
+## Patient stratification by gene expression:
+This function `classify_patients` performs patient stratification into high/low expression groups based on expression of selected gene.
+
+
+```{r classify_patients, warning=FALSE, message=FALSE, echo=TRUE, tidy=TRUE, eval=T}
+
+# classify_patients
+# This function takes the gene as input and classify the patients into high and low groups. 
+# Note: Transposed FPKM matrix (M) is read in the previous function.
+# The results is a list with 4 variables as below
+# counts - counts of patients by quantile
+# summary - (min, max, mean, median) by quantile
+# high - patient IDs with high expression of given gene
+# low  - patient IDss with low expression of given gene
+
+
+
+classify_patients <- function(gene) {
+  
+  gene_data =  dplyr::select(M, all_of(gene))
+  gene_data =  rownames_to_column(gene_data, "patient_ID")
+  names(gene_data) = c("patient_ID", "gene")
+  head(gene_data)
+  
+  #print(mean(gene_data$gene))
+  #print(median(gene_data$gene))
+  
+  data_10Q = gene_data %>% 
+    mutate(quintile = ntile(gene, 10))
+  
+  counts = data_10Q %>% 
+    group_by(quintile)  %>% 
+    summarize(n())
+  
+  summary = data_10Q %>% 
+    group_by(quintile)  %>% 
+    summarize(size_min = min(gene), size_mean = mean(gene), sie_median = median(gene), size_max = max(gene))
+  
+  high = data_10Q %>%
+    dplyr::filter( quintile > 5) %>%
+    dplyr::select(all_of(c("patient_ID")))
+  
+  low  = data_10Q %>%
+    dplyr::filter( quintile <= 5) %>%
+    dplyr::select(all_of(c("patient_ID")))
+  
+  high = as.vector(high$patient_ID)
+  low  = as.vector(low$patient_ID)
+  
+  result <- list(counts=counts,summary=summary, high = high, low = low)
+  return(result)
+  
+}
+
+
+```
+
+
+## Calculate differential expression:
+This function `calculate_DEG` performs differential expression analysis between given group of patients e.g. high vs low expression (for a certain gene). In a nutshell, this function adapted `TCGAanalyze_DEA` method to work with current TCGA-GBM data.
+
+
+```{r calculate_DEG, warning=FALSE, message=FALSE, echo=TRUE, tidy=TRUE, eval=T}
+
+
+# calculate_DEG
+# This function takes treatment and control groups (in order) as input i.e. $high and $low from function classify_patients. 
+# The results is a data frame of DE results containing columns (Gene_ID, logFC, logCPM, PValue, FDR, SYMBOL)
+
+
+calculate_DEG <- function(treatment, control) {
+  
+  # extract matrix of raw counts
+  treatment  = GBM.raw.counts[,treatment]
+  control   = GBM.raw.counts[,control]
+  
+  print(lapply(list(treatment, control), dim))
+  
+  #calculate deg as high_vs_low
+  
+  deg = TCGAanalyze_DEA(
+    mat1 = control,
+    mat2 = treatment,
+    Cond1type = "control",
+    Cond2type = "treatment",
+    fdr.cut = 1
+  )
+  
+  deg = rownames_to_column(deg, "Gene_ID")
+  
+  #Link Gene Symbol Information
+  ens2symbol <- AnnotationDbi::select(EnsDb.Hsapiens.v86,
+                                      key=deg$Gene_ID, 
+                                      columns="SYMBOL",
+                                      keytype="GENEID")
+  
+  ens2symbol <- as_tibble(ens2symbol)
+  names(ens2symbol) = c("Gene_ID", "SYMBOL")
+  deg <- inner_join(deg, ens2symbol)
+  
+  return(deg)
+  
+}
+
+```
+
+
+# Analysis of GBM Data:
+
+## Classification of patients into high and low groups.
+
+1. Stratifying the patients based on a single gene expression allows equal distribution of patients into two groups (high and low).  We applied this stratification  for two individual genes `PVR` and `NT5E` to determine patients with high and low expression for each individual gene.
+
+
+2. To use multiple genes for stratification e.g. combination of `PVR-NT5E`, we determine the group of patients which have consistent high expression for both genes and group of patients with consistent low expression for both genes. A subset of patients with high expression for both genes were included as `PVR-NT5E high` and patients with low expression for both genes were included as `PVR-NT5E low`.  
+
+
+```{r Determine_high_low_groups, warning=FALSE, message=FALSE, echo=TRUE, tidy=TRUE, results='hide', fig.width=6, fig.height=6}
+
+gene = "PVR"
+PVR_high_low = classify_patients(gene)
+
+
+gene = "NT5E"
+NT5E_high_low = classify_patients(gene)
+
+
+my_list = list(PVR_high = PVR_high_low$high, NT5E_high = NT5E_high_low$high)
+
+high_venn = ggvenn::ggvenn(my_list, show_percentage = FALSE, set_name_size = 3)
+
+my_list = list(PVR_low = PVR_high_low$low, NT5E_low = NT5E_high_low$low)
+low_venn = ggvenn::ggvenn(my_list, show_percentage = FALSE, set_name_size = 3)
+
+
+# Vector of patient names with high expression of PVR and high expression of NT5E (N = 49)
+high_intsect = intersect(PVR_high_low$high, NT5E_high_low$high)
+
+# Vector of patient names with low expression of PVR and low expression of NT5E (N = 53)
+low_intsect  = intersect(PVR_high_low$low, NT5E_high_low$low)
+
+cowplot::plot_grid(high_venn, low_venn, ncol = 2)
+
+```
+
+
+3. As described  in the Venn diagrams above, 49 patients have consistent high expression for PVR and NT5E genes, while 53 patients have consistent low expression for PVR and NT5E genes. For the `PVR-NT5E` combination, 49 patients were used in the high group while 53 patients were used in the low group.  
+
+
+
+
+4. Differential expression analysis for `PVR-NT5E` combination was performed using 49 patients in `PVR-NT5E high` group and 53 patients in `PVR-NT5E low` group.
+
+
+
+```{r DE_Analysis, warning=FALSE, message=FALSE, echo=FALSE, tidy=TRUE, results='hide', eval = TRUE, fig.height=5, fig.width=6}
+
+high_vs_low = calculate_DEG(high_intsect, low_intsect)
+
+write.table(high_vs_low, file = "high_vs_low_NT5E_PVR.TXT", quote = F, sep = "\t", row.names = F)
+
+high_vs_low_subset = high_vs_low %>% 
+  dplyr::select(all_of(c("SYMBOL", "logFC", "PValue", "FDR")))
+
+```
+
+
+5. Volcano plot  showing the overview of differentially expressed genes between high vs low group for `PVR-NT5E` combination was created using R-package `EnhancedVolcano`.
+
+```{r Volcanoplot, warning=FALSE, message=FALSE, echo=TRUE, tidy=TRUE, results="hide", fig.width=8, fig.height=6, eval = TRUE}
+
+gene = "PVR-NT5E"
+volcano_name = paste0("High Vs. Low (", gene, ")")
+
+EnhancedVolcano(high_vs_low_subset,
+                lab = high_vs_low_subset$SYMBOL,
+                x = 'logFC',
+                y = 'FDR', pCutoff  = 0.05, ylab = bquote(~-Log[10]~adjusted~italic(FDR)), 
+                title = volcano_name)
+
+
+```
+
+
